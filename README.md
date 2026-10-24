@@ -20,15 +20,10 @@ First of all, print the placemat ('aruco_board.jpg') in A3 paper (29.7x42.0 cm).
 
 The plate that will be used must be plain with no patterns or weird textures.
 
-Record two videos for each one of the aforementioned methods:
+The placemat must remain fully visible around the plate while recording. For pixel tracking, record one video:
 
-1. A video recording by moving freely the camera around the food in circular motion. It is
-better to keep a constant distance from the plate. Also, the placemat should be clearly visible, 
-so keep the camera at the top and not too close to the table. The duration of
-the video will be ~15 sec.
-2. A video recording directly above the plate, facing vertically to it. The recording will be from
-left hand side to right hand side (preferably in landscape mode), by just moving the camera horizontally. The duration of
-the video will be ~8 sec.
+1. Move the camera slowly around the stationary food in a complete circle, keeping a roughly constant distance. Keep the placemat visible and the camera high enough to see its markers. Aim for about 15 seconds.
+2. A separate video recorded directly above the plate is used only by the stereo-matching method. Move horizontally from left to right (preferably in landscape mode) for about 8 seconds.
 
 ## Run the code
 Install dependencies from setup.py by typing
@@ -43,10 +38,12 @@ by passing the path to the first and second video respectively as parameters.
 ```python
 from volume_calculation import volume_with_stereo_matching, volume_with_pixel_tracking
 
-volume1 = volume_with_pixel_tracking('path_to_video_1')
+measurement = volume_with_pixel_tracking('path_to_circular_video')
+print(measurement['volume_ml'], measurement['dimensions_cm'])
 volume2 = volume_with_stereo_matching('path_to_video_2')
 ```
 
+The pixel-tracking result contains `volume_ml` and `dimensions_cm` in width, depth, and height order. The stereo-matching function retains its original volume-only result.
+
 ## Placemat
 ![](aruco_board.jpg)
-

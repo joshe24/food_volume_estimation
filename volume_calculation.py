@@ -1,12 +1,33 @@
 import cv2
-from open3d import *
+import open3d as o3d
 from cv2 import aruco
 import yaml
 import numpy as np
 from auxiliary_functions import *
 import time
 from random import randint
-from matplotlib import pyplot as plt
+
+PointCloud = o3d.geometry.PointCloud
+Vector3dVector = o3d.utility.Vector3dVector
+TransformationEstimationPointToPoint = o3d.pipelines.registration.TransformationEstimationPointToPoint
+
+
+def voxel_down_sample(point_cloud, voxel_size):
+    return point_cloud.voxel_down_sample(voxel_size)
+
+
+def radius_outlier_removal(point_cloud, nb_points, radius):
+    return point_cloud.remove_radius_outlier(nb_points=nb_points, radius=radius)
+
+
+def select_down_sample(point_cloud, indices):
+    return point_cloud.select_by_index(indices)
+
+
+def registration_icp(source, target, distance, transformation, estimation):
+    return o3d.pipelines.registration.registration_icp(
+        source, target, distance, transformation, estimation
+    )
 
 
 def volume_with_pixel_tracking(vid, calibration_file='calibration.yaml'):
@@ -17,30 +38,30 @@ def volume_with_pixel_tracking(vid, calibration_file='calibration.yaml'):
                      criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 15, 0.03))
 
     # create dictionary
-    aruco_dict = aruco.Dictionary_get(aruco.DICT_6X6_100)
+    aruco_dict = create_aruco_dictionary()
 
     # Creating a theoretical board we'll use to calculate marker positions
-    board = aruco.GridBoard_create(
-        markersX=5,
-        markersY=7,
-        markerLength=0.047,
-        markerSeparation=0.012,
-        dictionary=aruco_dict)
+    board = create_aruco_board(aruco_dict)
 
-    arucoParams = aruco.DetectorParameters_create()
+    arucoParams = create_aruco_parameters()
 
     # start timing for calibration
     start = time.time()
     # capture video
     cap = cv2.VideoCapture(vid)
+    if not cap.isOpened():
+        raise RuntimeError("Não foi possível abrir o vídeo do alimento.")
 
     # calibrate camera
-    cameraMatrix, distCoeffs = calibrate_cap(cap, num=5, step=40)
+    try:
+        cameraMatrix, distCoeffs = calibrate_cap(cap, num=5, step=40)
+    finally:
+        cap.release()
 
     # if calibration is way off, just load the pre-calculated parameters
     if cameraMatrix[0, 0] > 1800 or cameraMatrix[1, 1] > 1800:
         with open(calibration_file) as f:
-            intrinsic = yaml.load(f)
+            intrinsic = yaml.safe_load(f)
         cameraMatrix = np.array(intrinsic.get('cameraMatrix'))
         distCoeffs = np.array(intrinsic.get('distCoeffs'))
 
@@ -51,6 +72,8 @@ def volume_with_pixel_tracking(vid, calibration_file='calibration.yaml'):
     # start timing for volume estimation
     start = time.time()
     cap = cv2.VideoCapture(vid)
+    if not cap.isOpened():
+        raise RuntimeError("Não foi possível reabrir o vídeo para estimar o volume.")
 
     # skip some frames (probably user won't move the camera from the beginning)
     step = 10
@@ -58,6 +81,9 @@ def volume_with_pixel_tracking(vid, calibration_file='calibration.yaml'):
         cap.read()
 
     ret, frame1 = cap.read()
+    if not ret or frame1 is None:
+        cap.release()
+        raise RuntimeError("O vídeo é curto demais para iniciar a reconstrução.")
     prvs = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
 
     # get images shape (currently 1920x1080)
@@ -76,14 +102,16 @@ def volume_with_pixel_tracking(vid, calibration_file='calibration.yaml'):
             ret, im1 = cap.read()
 
         # if video is finished break
-        if im1 is None:
+        if not ret or im1 is None:
             break
 
         # check if image is blur and keep one that is not
         while is_blur(im1, 100):
             ret, im1 = cap.read()
-            if im1 is None:
+            if not ret or im1 is None:
                 break
+        if im1 is None:
+            break
 
         # this is the first frame of the sequence
         frame1 = im1
@@ -149,18 +177,22 @@ def volume_with_pixel_tracking(vid, calibration_file='calibration.yaml'):
             cap.read()
             ret, im2 = cap.read()
             # if video is finished, break
-            if im2 is None:
+            if not ret or im2 is None:
                 break
             # find a non blur frame
             while is_blur(im2, 100):
                 ret, im2 = cap.read()
-                if im2 is None:
+                if not ret or im2 is None:
                     break
+            if im2 is None:
+                break
 
             frame2 = im2
 
             # estimate the pose and find rotation matrix
             _, rvec2, tvec2, cor2, ids2 = pose_estimation(frame2, board, aruco_dict, arucoParams, cameraMatrix, distCoeffs)
+            if rvec2 is None:
+                break
             a2, _ = cv2.Rodrigues(rvec2)
 
             next1 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
@@ -198,7 +230,7 @@ def volume_with_pixel_tracking(vid, calibration_file='calibration.yaml'):
         pts2 = good_new.T
 
         # if there is no corresponding frames between start and end frames continue
-        if pts1.shape[0] is 0 or pts2.shape[0] is 0:
+        if pts1.shape[0] == 0 or pts2.shape[0] == 0:
             continue
 
         # keep colors of these pixels form the start frame
@@ -279,6 +311,11 @@ def volume_with_pixel_tracking(vid, calibration_file='calibration.yaml'):
             final.points = Vector3dVector(xyz)
             final.colors = Vector3dVector(np.vstack([col, color1 / 255.0]))
 
+    if u == 0:
+        cap.release()
+        raise RuntimeError("O scanner não conseguiu reconstruir pontos suficientes do alimento.")
+    cap.release()
+
     # final coordinates and color
     xyz = np.asarray(final.points)
     Xs = xyz[:, 0]
@@ -323,6 +360,8 @@ def volume_with_pixel_tracking(vid, calibration_file='calibration.yaml'):
 
     inlier_cloud = select_down_sample(downpcd, ind)
     inliers = np.asarray(inlier_cloud.points)
+    if inliers.size == 0:
+        raise RuntimeError("O scanner não encontrou pontos válidos para medir o alimento.")
 
     X = inliers[:, 0]
     Y = inliers[:, 1]
@@ -346,28 +385,33 @@ def volume_with_pixel_tracking(vid, calibration_file='calibration.yaml'):
     # estimate the volume
     V = volume_estimation(X, Y, Z, bottom, voxel, avg_dist=3)
     print("Volume is: ", V)
+    extents_cm = (inliers.max(axis=0) - inliers.min(axis=0)) * 100
+    dimensions_cm = np.array(
+        [max(extents_cm[0], extents_cm[1]), min(extents_cm[0], extents_cm[1]), extents_cm[2]]
+    )
+    dimensions_cm = np.round(dimensions_cm, 1)
+    if not np.all(np.isfinite(dimensions_cm)) or np.any(dimensions_cm <= 0):
+        raise RuntimeError("O scanner não encontrou dimensões válidas para o alimento.")
 
     # stop timing
     end = time.time()
     print("Time for volume: ", end - start)
 
-    return V
+    return {
+        "volume_ml": float(V * 1000),
+        "dimensions_cm": dimensions_cm.tolist(),
+    }
 
 
 def volume_with_stereo_matching(vid, calibration_file='calibration.yaml'):
 
     # create dictionary
-    aruco_dict = aruco.Dictionary_get(aruco.DICT_6X6_100)
+    aruco_dict = create_aruco_dictionary()
 
     # Creating a theoretical board we'll use to calculate marker positions
-    board = aruco.GridBoard_create(
-        markersX=5,
-        markersY=7,
-        markerLength=0.047,
-        markerSeparation=0.012,
-        dictionary=aruco_dict)
+    board = create_aruco_board(aruco_dict)
 
-    arucoParams = aruco.DetectorParameters_create()
+    arucoParams = create_aruco_parameters()
 
     # find 4 corners of each marker in WCS
     a = board.getGridSize()
@@ -395,7 +439,7 @@ def volume_with_stereo_matching(vid, calibration_file='calibration.yaml'):
     if cameraMatrix[0, 0] > 1800 or cameraMatrix[1, 1] > 1800:
         # Load pre calculated intrinsic parameters
         with open(calibration_file) as f:
-            intrinsic = yaml.load(f)
+            intrinsic = yaml.safe_load(f)
         cameraMatrix = np.array(intrinsic.get('cameraMatrix'))
         distCoeffs = np.array(intrinsic.get('distCoeffs'))
 

@@ -4,12 +4,10 @@ setup(
     name='food_volume_estimation',
     version='0.1.5',
     install_requires=[
-        'PyYAML',
-        'opencv-python',
-        'numpy',
-        'matplotlib',
-        'open3d-python',
-        'opencv-contrib-python',
-        'scipy'
+        'PyYAML==6.0.2',
+        'opencv-contrib-python-headless==4.11.0.86',
+        'numpy<2',
+        'open3d==0.19.0',
+        'scipy==1.15.3'
     ]
 )

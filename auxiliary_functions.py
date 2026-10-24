@@ -5,6 +5,31 @@ from scipy.spatial import Delaunay
 from scipy.spatial import ConvexHull
 
 
+def create_aruco_dictionary():
+    if hasattr(aruco, "getPredefinedDictionary"):
+        return aruco.getPredefinedDictionary(aruco.DICT_6X6_100)
+    return aruco.Dictionary_get(aruco.DICT_6X6_100)
+
+
+def create_aruco_board(aruco_dict):
+    if hasattr(aruco, "GridBoard"):
+        return aruco.GridBoard((5, 7), 0.047, 0.012, aruco_dict)
+    return aruco.GridBoard_create(5, 7, 0.047, 0.012, aruco_dict)
+
+
+def create_aruco_parameters():
+    if hasattr(aruco, "DetectorParameters"):
+        return aruco.DetectorParameters()
+    return aruco.DetectorParameters_create()
+
+
+def detect_aruco_markers(image, aruco_dict, parameters):
+    if hasattr(aruco, "ArucoDetector"):
+        detector = aruco.ArucoDetector(aruco_dict, parameters)
+        return detector.detectMarkers(image)
+    return aruco.detectMarkers(image, aruco_dict, parameters=parameters)
+
+
 def calibrate_cap1(cap, step):
     """ Calibrates the camera for intrinsic parameters.
     
@@ -17,18 +42,13 @@ def calibrate_cap1(cap, step):
         distCoeffs: Distortion coefficients.
     """
     # create dictionary
-    aruco_dict = aruco.Dictionary_get(aruco.DICT_6X6_100)
+    aruco_dict = create_aruco_dictionary()
 
     # Creating a theoretical board we'll use to calculate marker positions
-    board = aruco.GridBoard_create(
-        markersX=5,
-        markersY=7,
-        markerLength=0.047,
-        markerSeparation=0.012,
-        dictionary=aruco_dict)
+    board = create_aruco_board(aruco_dict)
     
     # Initialize parameters and criteria for markers' detection
-    parameters = aruco.DetectorParameters_create()
+    parameters = create_aruco_parameters()
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-3) 
         
     counter = []
@@ -47,13 +67,13 @@ def calibrate_cap1(cap, step):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
         # Detect Aruco markers
-        corners, ids, rejectedImgPoints = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+        corners, ids, rejectedImgPoints = detect_aruco_markers(gray, aruco_dict, parameters)
         for k in range(len(corners)):
             cv2.cornerSubPix(gray, corners[k], (7, 7), (-1, -1), criteria)
      
         # Put each marker's id and corners in separate lists,
         # along with the number of markers
-        if len(ids) > 1:
+        if ids is not None and len(ids) > 1:
             if first:
                 corners_list = corners
                 print(type(corners))
@@ -64,6 +84,9 @@ def calibrate_cap1(cap, step):
                 id_list = np.vstack((id_list, ids))
                  
             counter.append(len(ids))
+
+    if first:
+        raise RuntimeError("Não foi possível detectar o marcador de calibração em quadros suficientes.")
 
     # Calibrate
     counter = np.array(counter)    
@@ -85,24 +108,20 @@ def calibrate_cap(cap, num, step):
     """
     
     # create dictionary
-    aruco_dict = aruco.Dictionary_get(aruco.DICT_6X6_100)
+    aruco_dict = create_aruco_dictionary()
 
     # Creating a theoretical board we'll use to calculate marker positions
-    board = aruco.GridBoard_create(
-        markersX=5,
-        markersY=7,
-        markerLength=0.047,
-        markerSeparation=0.012,
-        dictionary=aruco_dict)
+    board = create_aruco_board(aruco_dict)
     
     # Initialize parameters and criteria for markers' detection
-    parameters = aruco.DetectorParameters_create()
+    parameters = create_aruco_parameters()
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-3) 
         
     counter = []
     corners_list = []
     id_list = []
     first = True
+    image_shape = None
 
     # For each image detect markers.
     for i in range(num):
@@ -114,17 +133,18 @@ def calibrate_cap(cap, num, step):
         
         if not ret:
             break
+        image_shape = img.shape[:2]
         
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
         # Detect Aruco markers
-        corners, ids, rejectedImgPoints = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+        corners, ids, rejectedImgPoints = detect_aruco_markers(gray, aruco_dict, parameters)
         for k in range(len(corners)):
             cv2.cornerSubPix(gray, corners[k], (7, 7), (-1,-1), criteria)
      
         # Put each marker's id and corners in separate lists,
         # along with the number of markers
-        if len(ids) > 1:
+        if ids is not None and len(ids) > 1:
             if first:
                 corners_list = corners
                 print(type(corners))
@@ -136,9 +156,12 @@ def calibrate_cap(cap, num, step):
                  
             counter.append(len(ids))
 
+    if first or image_shape is None:
+        raise RuntimeError("Não foi possível detectar o marcador de calibração em quadros suficientes.")
+
     # Calibrate
     counter = np.array(counter)    
-    ret, cameraMatrix, distCoeffs, rvecs, tvecs = aruco.calibrateCameraAruco(corners_list, id_list, counter, board, gray.shape, None, None )
+    ret, cameraMatrix, distCoeffs, rvecs, tvecs = aruco.calibrateCameraAruco(corners_list, id_list, counter, board, image_shape, None, None )
     return cameraMatrix, distCoeffs
 
 
@@ -165,7 +188,7 @@ def pose_estimation(img, board, aruco_dict, arucoParams, mtx, dist):
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-3) 
     img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    corners, ids, rejectedImgPoints = aruco.detectMarkers(img_gray, aruco_dict, parameters=arucoParams)
+    corners, ids, rejectedImgPoints = detect_aruco_markers(img_gray, aruco_dict, arucoParams)
     for k in range(len(corners)):
             cv2.cornerSubPix(img_gray, corners[k], (5, 5), (-1, -1), criteria)
     if not corners:
@@ -329,7 +352,7 @@ def food(image, placemat, cor):
    
     # check code here, probably not needed till line 401
     # Find contours
-    contours, _ = cv2.findContours(dish, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(dish, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[-2:]
     # Find the convex hull object for each contour
     hull_list = []
     for i in range(len(contours)):
@@ -419,7 +442,7 @@ def food(image, placemat, cor):
     
         # Find the contours that are formed from the edges
         th1 = gray*edg
-        _, contours, hierarchy = cv2.findContours(th1, 2, 1)
+        contours, hierarchy = cv2.findContours(th1, 2, 1)[-2:]
 
         img = np.zeros(gray.shape, image.dtype)
         cv2.drawContours(img, contours, -1, 255, 3)
